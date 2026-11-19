@@ -34,6 +34,9 @@ typedef struct {
 /** Start the background fetch task. */
 void adsb_start(double home_lat, double home_lon, double radius_km);
 
+/** Re-centre the radar on a new home position (wakes the fetch task). Any task. */
+void adsb_set_home(double lat, double lon);
+
 /** Change the query radius (wakes the fetch task for an immediate refresh). */
 void adsb_set_radius_km(double radius_km);
 

@@ -32,7 +32,8 @@ static SemaphoreHandle_t s_mtx;
 static TaskHandle_t s_task;
 static adsb_snapshot_t s_shared; /* guarded by s_mtx */
 static adsb_snapshot_t s_work;   /* fetch task only */
-static double s_lat, s_lon;
+static double s_lat, s_lon;           /* fetch task copy */
+static double s_home_lat, s_home_lon; /* guarded by s_mtx */
 static volatile double s_radius_km = 16;
 static char *s_buf;
 static size_t s_cap;
@@ -242,6 +243,11 @@ static void fetch_task(void *arg)
     for (;;) {
         wifi_wait_connected(portMAX_DELAY);
 
+        xSemaphoreTake(s_mtx, portMAX_DELAY);
+        s_lat = s_home_lat;
+        s_lon = s_home_lon;
+        xSemaphoreGive(s_mtx);
+
         /* Query a bit beyond the displayed range so edge traffic shows up. */
         int nm = (int)ceil(s_radius_km * 1.25 / KM_PER_NM);
         if (nm < 1) nm = 1;
@@ -279,11 +285,25 @@ static void fetch_task(void *arg)
 
 void adsb_start(double home_lat, double home_lon, double radius_km)
 {
-    s_lat = home_lat;
-    s_lon = home_lon;
+    s_lat = s_home_lat = home_lat;
+    s_lon = s_home_lon = home_lon;
     s_radius_km = radius_km;
     s_mtx = xSemaphoreCreateMutex();
     xTaskCreate(fetch_task, "adsb", 12 * 1024, NULL, 4, &s_task);
+}
+
+void adsb_set_home(double lat, double lon)
+{
+    if (!s_mtx) {
+        return;
+    }
+    xSemaphoreTake(s_mtx, portMAX_DELAY);
+    s_home_lat = lat;
+    s_home_lon = lon;
+    xSemaphoreGive(s_mtx);
+    if (s_task) {
+        xTaskNotifyGive(s_task);
+    }
 }
 
 void adsb_set_radius_km(double radius_km)
