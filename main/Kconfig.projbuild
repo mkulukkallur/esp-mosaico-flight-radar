@@ -11,14 +11,34 @@ menu "Flight Radar"
         string "Fallback Wi-Fi password"
         default ""
 
+    config FR_LOCATION_AUTO
+        bool "Find location automatically (Wi-Fi, then IP address)"
+        default y
+        help
+            At start-up, scan nearby Wi-Fi networks and look them up in beaconDB;
+            if that fails, use ipinfo.io's IP-based estimate. The result is saved
+            and used immediately on the next boot. Disable to always use the
+            coordinates below.
+
+    config FR_WIFI_GEO_URL
+        string "Wi-Fi geolocation service URL"
+        default "https://api.beacondb.net/v1/geolocate"
+        depends on FR_LOCATION_AUTO
+
+    config FR_IP_GEO_URL
+        string "IP geolocation service URL"
+        default "https://ipinfo.io/json"
+        depends on FR_LOCATION_AUTO
+
     config FR_HOME_LAT
-        string "Home latitude (decimal degrees)"
+        string "Fallback latitude (decimal degrees)"
         default "40.4490"
         help
-            Centre of the radar. Default: North Brunswick, NJ 08902.
+            Used when automatic location is off, or before the first automatic fix.
+            Default: North Brunswick, NJ 08902.
 
     config FR_HOME_LON
-        string "Home longitude (decimal degrees, west is negative)"
+        string "Fallback longitude (decimal degrees, west is negative)"
         default "-74.4807"
 
     config FR_API_BASE

@@ -27,6 +27,7 @@
 #include "esp_timer.h"
 #include "sdkconfig.h"
 #include "adsb.h"
+#include "location.h"
 #include "radar_math.h"
 #include "radar_ui.h"
 #include "wifi.h"
@@ -93,10 +94,20 @@ static uint32_t s_seq;
 static bool s_have_data;
 static bool s_overhead;
 static volatile bool s_no_wifi;
+static volatile bool s_tap_pending;
+static volatile int s_loc_src = -1, s_loc_acc;
+static volatile int64_t s_loc_until_us;
 static double s_sweep_deg;
 
 /* unscii_16 is 16 px per character: CALLSIGN(8) DIST(4) ALT(5) SPD(3) TRK(3) */
 static const int k_col_x[5] = {18, 162, 246, 346, 414};
+
+void radar_ui_set_location(int src, int accuracy_m)
+{
+    s_loc_src = src;
+    s_loc_acc = accuracy_m;
+    s_loc_until_us = esp_timer_get_time() + 15 * 1000000LL; /* show for 15 s */
+}
 
 void radar_ui_set_no_wifi(void)
 {
@@ -304,6 +315,15 @@ static void update_status(void)
         snprintf(txt, sizeof(txt), "NO WIFI: SET IT IN VIBE MODE");
     } else if (!wifi_is_connected()) {
         snprintf(txt, sizeof(txt), "CONNECTING WIFI...");
+    } else if (s_loc_src >= 0 && esp_timer_get_time() < s_loc_until_us) {
+        if (s_loc_acc < 0) {
+            snprintf(txt, sizeof(txt), "LOCATION: AUTO FAILED");
+        } else if (s_loc_acc > 0 && s_loc_acc < 100000) {
+            snprintf(txt, sizeof(txt), "LOCATED BY %s +-%dM", location_source_name((loc_source_t)s_loc_src),
+                     s_loc_acc);
+        } else {
+            snprintf(txt, sizeof(txt), "LOCATED BY %s", location_source_name((loc_source_t)s_loc_src));
+        }
     } else if (!s_have_data && s_seq == 0) {
         snprintf(txt, sizeof(txt), "LOADING...  ADSB.FI");
     } else if (!s_snap.ok) {
@@ -322,6 +342,8 @@ static void update_status(void)
         lv_obj_add_flag(s_lbl_alert, LV_OBJ_FLAG_HIDDEN);
     }
 }
+
+static void apply_range_change(void);
 
 /* ---------- timers ---------- */
 
@@ -362,6 +384,10 @@ static void sweep_timer_cb(lv_timer_t *t)
 static void data_timer_cb(lv_timer_t *t)
 {
     (void)t;
+    if (s_tap_pending) {
+        s_tap_pending = false;
+        apply_range_change();
+    }
     if (adsb_get_snapshot(&s_snap, s_seq)) {
         s_seq = s_snap.seq;
         if (s_snap.ok) {
@@ -373,13 +399,19 @@ static void data_timer_cb(lv_timer_t *t)
     update_status();
 }
 
+/* Keep the input callback trivial: the work happens in data_timer_cb, which
+ * runs in the same LVGL task but outside the touch/indev call chain. */
 static void on_tap(lv_event_t *e)
 {
     (void)e;
+    s_tap_pending = true;
+}
+
+static void apply_range_change(void)
+{
     s_range_idx = (s_range_idx + 1) % N_RANGES;
     update_ring_labels();
     update_blips();
-    update_status();
     adsb_set_radius_km(radar_ui_range_km());
 }
 
@@ -487,5 +519,5 @@ void radar_ui_create(void)
 
     update_status();
     lv_timer_create(sweep_timer_cb, FRAME_MS, NULL);
-    lv_timer_create(data_timer_cb, 250, NULL);
+    lv_timer_create(data_timer_cb, 100, NULL);
 }

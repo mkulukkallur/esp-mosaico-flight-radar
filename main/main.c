@@ -18,6 +18,7 @@
 #include "nvs_flash.h"
 #include "sdkconfig.h"
 #include "adsb.h"
+#include "location.h"
 #include "radar_ui.h"
 #include "wifi.h"
 
@@ -30,11 +31,15 @@ void app_main(void)
     /* Vibe Mode / update support must stay reachable whatever happens next. */
     iris_ota_support_start();
 
-    double lat = strtod(CONFIG_FR_HOME_LAT, NULL);
-    double lon = strtod(CONFIG_FR_HOME_LON, NULL);
-    ESP_LOGI(TAG, "Home %.4f, %.4f", lat, lon);
+    double lat, lon;
+    loc_source_t src = location_initial(&lat, &lon);
+    ESP_LOGI(TAG, "Start centre %.4f, %.4f (%s)", lat, lon, location_source_name(src));
 
-    lv_display_t *display = bsp_display_start();
+    /* Larger LVGL task stack than the adapter default: the radar redraws many
+     * objects and formats text inside LVGL timers and input callbacks. */
+    bsp_display_config_t disp_cfg = BSP_DISPLAY_DEFAULT_CONFIG();
+    disp_cfg.task_stack_size = 16 * 1024;
+    lv_display_t *display = bsp_display_start_with_config(&disp_cfg);
     if (!display) {
         ESP_LOGE(TAG, "Display unavailable; Vibe Mode RPC remains active");
         return;
@@ -68,5 +73,6 @@ void app_main(void)
     esp_netif_sntp_init(&sntp);
 
     adsb_start(lat, lon, radar_ui_range_km());
+    location_start_auto();
     ESP_LOGI(TAG, "Flight radar running");
 }

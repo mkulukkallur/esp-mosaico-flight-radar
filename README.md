@@ -11,6 +11,7 @@ Ideas and your settings stay in place.
 * Blinking **OVERHEAD!** when a plane is within ~1 mile.
 * **Tap the screen** to cycle the range: 2 / 5 / 10 / 25 mi.
 * Uses the **Wi-Fi saved in Vibe Mode** automatically.
+* **Finds its own location** at start-up: nearby Wi-Fi networks first, then the internet (IP) address. The fix is saved for the next boot.
 * Data: [adsb.fi](https://adsb.fi) open data, refreshed every 10 s (personal, non-commercial use).
 
 ## Requirements
@@ -47,9 +48,26 @@ run `python mosaico.py recover` once, then run `system-update` again.
 | Reinstall after code changes | `python mosaico.py iris app-update --project projects/flight_radar` |
 | Get back to Vibe Mode | Hold the **AI** button while powering on |
 | Change location / units / API | `idf.py -C projects/flight_radar menuconfig` → *Flight Radar*, then `system-update` |
+| Fix the location by hand | menuconfig → *Flight Radar* → untick *Find location automatically*, set the fallback latitude/longitude |
 
 Logs go through ESP-Iris over USB (`iris logs`). Plain `idf.py monitor` won't show them,
 because the console is on UART in Mosaico apps.
+
+## Automatic location
+
+At each start-up, once Wi-Fi is connected, the radar:
+
+1. Scans nearby Wi-Fi networks and sends their router MAC addresses and signal
+   strengths (never network names) to [beaconDB](https://beacondb.net), an open
+   location database. It skips networks whose names end in `_nomap` and randomised MACs.
+2. If that fails or only gives a rough estimate, it uses [ipinfo.io](https://ipinfo.io)
+   (city-level, from the internet address).
+3. If both fail, it keeps the last saved fix, or the fallback coordinates in menuconfig.
+
+The footer briefly shows `LOCATED BY WIFI +-35M` (or `IP`), and the radar
+re-centres. beaconDB is community-built, so Wi-Fi coverage may be thin in some
+areas. Rough IP estimates can be several miles off. If yours is, turn auto-location
+off and enter your coordinates.
 
 ## What differs from a standalone ESP-IDF project
 
