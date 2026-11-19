@@ -1,0 +1,51 @@
+menu "Flight Radar"
+
+    config FR_WIFI_SSID
+        string "Fallback Wi-Fi network name (SSID)"
+        default ""
+        help
+            Normally leave empty: the radar uses the Wi-Fi network saved in the
+            Mosaico's Vibe Mode settings. Set this only to override it.
+
+    config FR_WIFI_PASSWORD
+        string "Fallback Wi-Fi password"
+        default ""
+
+    config FR_HOME_LAT
+        string "Home latitude (decimal degrees)"
+        default "40.4490"
+        help
+            Centre of the radar. Default: North Brunswick, NJ 08902.
+
+    config FR_HOME_LON
+        string "Home longitude (decimal degrees, west is negative)"
+        default "-74.4807"
+
+    config FR_API_BASE
+        string "ADS-B API base URL"
+        default "https://opendata.adsb.fi/api/v3"
+        help
+            Any ADSBexchange-v2-compatible API with a /lat/X/lon/Y/dist/NM endpoint.
+            adsb.fi (default) is free for personal, non-commercial use, max 1 request/second.
+            Alternative: https://api.adsb.lol/v2
+
+    config FR_REFRESH_SEC
+        int "Seconds between data refreshes"
+        range 5 120
+        default 10
+
+    choice FR_UNITS
+        prompt "Distance units"
+        default FR_UNITS_IMPERIAL
+
+        config FR_UNITS_IMPERIAL
+            bool "Miles (ranges 2/5/10/25 mi)"
+        config FR_UNITS_METRIC
+            bool "Kilometres (ranges 3/8/15/40 km)"
+    endchoice
+
+    config FR_TIMEZONE
+        string "POSIX timezone for the clock"
+        default "EST5EDT,M3.2.0,M11.1.0"
+
+endmenu
