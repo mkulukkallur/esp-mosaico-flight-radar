@@ -73,9 +73,9 @@ with an identifying User-Agent. Place data © OpenStreetMap contributors (ODbL),
 The top-left corner shows, for example:
 
 ```
-NORTH BRUNSWICK
-NJ 08902
-40.477 -74.483
+SPRINGFIELD
+IL 62701
+39.799 -89.644
 WIFI +-35M        <- or IP (APPROX) / MANUAL
 ```
 
