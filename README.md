@@ -2,8 +2,8 @@
 
 ![preview](preview.png)
 
-A green-phosphor radar showing live aircraft around North Brunswick, NJ (or anywhere
-you set), installed as a **normal Mosaico app next to Vibe Mode**. Vibe Mode, your
+A green-phosphor radar showing live aircraft around wherever the Mosaico is,
+installed as a **normal Mosaico app next to Vibe Mode**. Vibe Mode, your
 Ideas and your settings stay in place.
 
 * Rotating sweep. Aircraft light up as it passes, then fade. Heading lines show direction; longer means faster.
@@ -11,7 +11,7 @@ Ideas and your settings stay in place.
 * Blinking **OVERHEAD!** when a plane is within ~1 mile.
 * **Tap the screen** to cycle the range: 2 / 5 / 10 / 25 mi.
 * Uses the **Wi-Fi saved in Vibe Mode** automatically.
-* **Finds its own location** at start-up: nearby Wi-Fi networks first, then the internet (IP) address. The fix is saved for the next boot.
+* **Finds its own location** at every start-up: nearby Wi-Fi networks first, then the internet (IP) address. Town, state, ZIP, coordinates and source are shown in the top-left corner.
 * Data: [adsb.fi](https://adsb.fi) open data, refreshed every 10 s (personal, non-commercial use).
 
 ## Requirements
@@ -45,29 +45,103 @@ run `python mosaico.py recover` once, then run `system-update` again.
 | Task | How |
 |---|---|
 | See logs | `python mosaico.py iris logs --project projects/flight_radar` |
-| Reinstall after code changes | `python mosaico.py iris app-update --project projects/flight_radar` |
+| Reinstall after code or setting changes | `python mosaico.py iris system-update --project projects/flight_radar` (use this rather than `app-update`, which refuses boards whose Vibe Mode is newer than the toolkit) |
 | Get back to Vibe Mode | Hold the **AI** button while powering on |
-| Change location / units / API | `idf.py -C projects/flight_radar menuconfig` → *Flight Radar*, then `system-update` |
-| Fix the location by hand | menuconfig → *Flight Radar* → untick *Find location automatically*, set the fallback latitude/longitude |
+| Change location / units / API | See [Settings (menuconfig)](#settings-menuconfig) |
+| Set a location by hand | menuconfig → *Flight Radar* → *Manual latitude/longitude*. Used unless a precise Wi-Fi fix is found. |
 
 Logs go through ESP-Iris over USB (`iris logs`). Plain `idf.py monitor` won't show them,
 because the console is on UART in Mosaico apps.
 
-## Automatic location
+## Settings (menuconfig)
 
-At each start-up, once Wi-Fi is connected, the radar:
+All radar settings live in one menu. Open it from a normal Command Prompt or PowerShell
+window (not an IDE output pane: menuconfig needs a real terminal).
 
-1. Scans nearby Wi-Fi networks and sends their router MAC addresses and signal
-   strengths (never network names) to [beaconDB](https://beacondb.net), an open
-   location database. It skips networks whose names end in `_nomap` and randomised MACs.
-2. If that fails or only gives a rough estimate, it uses [ipinfo.io](https://ipinfo.io)
-   (city-level, from the internet address).
-3. If both fail, it keeps the last saved fix, or the fallback coordinates in menuconfig.
+```bat
+:: 1. Load ESP-IDF (every new window)
+C:\esp\espv6.2esp-idf\export.bat
 
-The footer briefly shows `LOCATED BY WIFI +-35M` (or `IP`), and the radar
-re-centres. beaconDB is community-built, so Wi-Fi coverage may be thin in some
-areas. Rough IP estimates can be several miles off. If yours is, turn auto-location
-off and enter your coordinates.
+:: 2. Go to the workspace and open the menu for this project
+cd C:\esp\esp-mosaico-vibe
+idf.py -C projects/flight_radar menuconfig
+```
+
+The first time, this configures the project first, which takes a minute. Then:
+
+1. Use **↓** to move to **Flight Radar** (near the bottom of the top-level list) and press **Enter**.
+2. Move to a setting and press **Enter** to edit it, or **Space** to toggle a choice.
+   Type the value and press **Enter**.
+3. Press **/** at any time to search, e.g. `FR_MANUAL_LAT`.
+4. Press **S**, then **Enter**, to save. Press **Q** (or **Esc** twice) to quit.
+
+Then build and install the new settings:
+
+```bat
+python mosaico.py iris system-update --project projects/flight_radar
+```
+
+| Setting (symbol) | Default | What it does |
+|---|---|---|
+| Fallback Wi-Fi network name (`FR_WIFI_SSID`) | *(empty)* | Leave empty to use the Wi-Fi saved in Vibe Mode |
+| Fallback Wi-Fi password (`FR_WIFI_PASSWORD`) | *(empty)* | Only with the SSID above |
+| Manual latitude (`FR_MANUAL_LAT`) | *(empty)* | Decimal degrees, e.g. `40.7128`. Used unless a precise Wi-Fi fix is found (see [Location](#location)) |
+| Manual longitude (`FR_MANUAL_LON`) | *(empty)* | Decimal degrees, **west is negative**, e.g. `-74.0060` |
+| Wi-Fi geolocation URL (`FR_WIFI_GEO_URL`) | `https://api.beacondb.net/v1/geolocate` | Wi-Fi location service |
+| IP geolocation URL (`FR_IP_GEO_URL`) | `https://ipinfo.io/json` | Rough location from the internet address |
+| Town-name lookup URL (`FR_REVGEO_URL`) | `https://nominatim.openstreetmap.org/reverse` | OpenStreetMap reverse geocoding |
+| ADS-B API base URL (`FR_API_BASE`) | `https://opendata.adsb.fi/api/v3` | Aircraft data. Alternative: `https://api.adsb.lol/v2` |
+| Seconds between refreshes (`FR_REFRESH_SEC`) | `10` | 5–120. adsb.fi allows at most 1 request/second |
+| Distance units (`FR_UNITS_*`) | Miles | Miles (2/5/10/25) or kilometres (3/8/15/40) |
+| Timezone (`FR_TIMEZONE`) | `EST5EDT,M3.2.0,M11.1.0` | POSIX timezone for the clock, e.g. `CST6CDT,M3.2.0,M11.1.0`, `PST8PDT,M3.2.0,M11.1.0` |
+
+**Finding your coordinates:** in Google Maps, right-click your home and click the numbers at the
+top of the menu to copy them (e.g. `40.47751, -74.48262`). The first number is the latitude, the
+second the longitude.
+
+**Checking a setting without the menu:**
+
+```bat
+findstr FR_ projects\flight_radar\build\sdkconfig
+```
+
+**Back to defaults:** delete `projects\flight_radar\build\sdkconfig` and run `system-update` again.
+Your settings live in that file, so a full clean or a deleted `build` folder resets them too.
+
+## Location
+
+There is no built-in default location. At every start-up the radar works out where it is,
+once, and nothing is saved between boots:
+
+1. **Wi-Fi (precise):** it scans nearby Wi-Fi networks and sends their router MAC
+   addresses and signal strengths (never network names) to [beaconDB](https://beacondb.net),
+   an open location database. It skips networks whose names end in `_nomap` and randomised MACs.
+   It uses the result only if it's precise (within 2 km).
+2. **Manual:** otherwise, if *Manual latitude/longitude* are set in menuconfig, those are used.
+   They're also shown straight away while the Wi-Fi lookup runs.
+3. **IP (approximate):** otherwise, it uses [ipinfo.io](https://ipinfo.io), which is city-level
+   from your internet address and can be many miles off.
+
+Manual coordinates therefore always win over an approximate fix, but a precise Wi-Fi fix
+wins over them. That helps if you move the Mosaico.
+
+It then looks up the town name with one request to OpenStreetMap's
+[Nominatim](https://nominatim.org), following its
+[usage policy](https://operations.osmfoundation.org/policies/nominatim/): one request per start-up,
+with an identifying User-Agent. Place data © OpenStreetMap contributors (ODbL), credited as `OSM` on screen.
+
+The top-left corner shows, for example:
+
+```
+SPRINGFIELD
+IL 62701
+39.799 -89.644
+WIFI +-35M        <- or IP (APPROX) / MANUAL
+```
+
+If it says `IP (APPROX)` and the town is wrong, beaconDB has no Wi-Fi data for your area yet.
+Set the manual coordinates, and they'll be used instead. If every method fails, the corner shows `NO LOCATION`
+and the radar waits.
 
 ## What differs from a standalone ESP-IDF project
 

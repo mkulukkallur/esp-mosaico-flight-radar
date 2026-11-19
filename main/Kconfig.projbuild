@@ -11,35 +11,35 @@ menu "Flight Radar"
         string "Fallback Wi-Fi password"
         default ""
 
-    config FR_LOCATION_AUTO
-        bool "Find location automatically (Wi-Fi, then IP address)"
-        default y
+    config FR_MANUAL_LAT
+        string "Manual latitude (overrides approximate locations)"
+        default ""
         help
-            At start-up, scan nearby Wi-Fi networks and look them up in beaconDB;
-            if that fails, use ipinfo.io's IP-based estimate. The result is saved
-            and used immediately on the next boot. Disable to always use the
-            coordinates below.
+            Decimal degrees, e.g. 40.7128. At every start-up the radar uses, in order:
+              1. a precise fix from nearby Wi-Fi networks (beaconDB, within 2 km),
+              2. these manual coordinates, if both are set,
+              3. an approximate fix from the internet address (ipinfo.io).
+            So manual coordinates always beat an approximate fix, and are used
+            immediately while the Wi-Fi lookup runs. Leave empty for automatic only.
+
+    config FR_MANUAL_LON
+        string "Manual longitude (west is negative)"
+        default ""
 
     config FR_WIFI_GEO_URL
         string "Wi-Fi geolocation service URL"
         default "https://api.beacondb.net/v1/geolocate"
-        depends on FR_LOCATION_AUTO
 
     config FR_IP_GEO_URL
         string "IP geolocation service URL"
         default "https://ipinfo.io/json"
-        depends on FR_LOCATION_AUTO
 
-    config FR_HOME_LAT
-        string "Fallback latitude (decimal degrees)"
-        default "40.4490"
+    config FR_REVGEO_URL
+        string "Town-name lookup (reverse geocoding) URL"
+        default "https://nominatim.openstreetmap.org/reverse"
         help
-            Used when automatic location is off, or before the first automatic fix.
-            Default: North Brunswick, NJ 08902.
-
-    config FR_HOME_LON
-        string "Fallback longitude (decimal degrees, west is negative)"
-        default "-74.4807"
+            OpenStreetMap Nominatim; one request per start-up. Usage policy:
+            https://operations.osmfoundation.org/policies/nominatim/
 
     config FR_API_BASE
         string "ADS-B API base URL"
