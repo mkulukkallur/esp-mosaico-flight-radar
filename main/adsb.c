@@ -38,6 +38,20 @@ static volatile double s_radius_km = 16;
 static char *s_buf;
 static size_t s_cap;
 
+/* cJSON makes thousands of small allocations for a busy sky (~100 KB of JSON
+ * near New York). By default small allocations land in internal RAM, which the
+ * Wi-Fi driver also needs: running it dry made Wi-Fi abort. Keep cJSON in PSRAM. */
+static void *json_malloc(size_t n)
+{
+    void *p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    return p ? p : heap_caps_malloc(n, MALLOC_CAP_8BIT);
+}
+
+static void json_free(void *p)
+{
+    heap_caps_free(p);
+}
+
 static void *buf_realloc(void *p, size_t n)
 {
     void *r = heap_caps_realloc(p, n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -273,7 +287,10 @@ static void fetch_task(void *arg)
         xSemaphoreGive(s_mtx);
 
         if (ok) {
-            ESP_LOGI(TAG, "%d aircraft within %d NM (%u bytes)", s_work.total, nm, (unsigned)len);
+            ESP_LOGI(TAG, "%d aircraft within %d NM (%u bytes), internal RAM free %u (min %u)",
+                     s_work.total, nm, (unsigned)len,
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
         } else {
             ESP_LOGW(TAG, "fetch failed (%d): %s", status, url);
         }
@@ -288,6 +305,8 @@ void adsb_start(double home_lat, double home_lon, double radius_km)
     s_lat = s_home_lat = home_lat;
     s_lon = s_home_lon = home_lon;
     s_radius_km = radius_km;
+    cJSON_Hooks hooks = {.malloc_fn = json_malloc, .free_fn = json_free};
+    cJSON_InitHooks(&hooks); /* global: also covers location.c */
     s_mtx = xSemaphoreCreateMutex();
     xTaskCreate(fetch_task, "adsb", 12 * 1024, NULL, 4, &s_task);
 }

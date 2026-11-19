@@ -94,6 +94,9 @@ void wifi_start(const char *ssid, const char *password)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
     ESP_ERROR_CHECK(esp_wifi_start());
+    /* The radar is an always-on display: keep the radio awake. Modem sleep
+     * re-initialises the PHY on every wake-up, which also needs internal RAM. */
+    esp_wifi_set_ps(WIFI_PS_NONE);
     ESP_LOGI(TAG, "Connecting to \"%s\"...", ssid);
 }
 
