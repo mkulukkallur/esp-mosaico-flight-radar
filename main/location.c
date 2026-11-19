@@ -1,12 +1,13 @@
 /*
  * Radar centre, determined once per start-up. Nothing is stored between boots.
  *
- *  0. Manual: menuconfig latitude/longitude, if both are set.
  *  1. Wi-Fi: scan nearby access points and ask beaconDB (an open, Mozilla
  *     Location Service compatible database). Only router MAC addresses and
  *     signal strengths are sent; networks named "*_nomap" and randomised
- *     (locally administered) MACs are skipped.
- *  2. IP: ipinfo.io's public endpoint (city level, can be miles off).
+ *     (locally administered) MACs are skipped. Used if precise (<= 2 km).
+ *  2. Manual: menuconfig latitude/longitude, if both are set. Overrides any
+ *     approximate result, and is shown immediately while step 1 runs.
+ *  3. IP: ipinfo.io's public endpoint (city level, can be miles off).
  *
  * The town name comes from one OpenStreetMap Nominatim reverse lookup per
  * boot, with an identifying User-Agent, per the Nominatim usage policy
@@ -294,15 +295,16 @@ static bool manual_location(loc_info_t *info)
 static void location_task(void *arg)
 {
     (void)arg;
-    loc_info_t info;
+    loc_info_t info, manual;
     memset(&info, 0, sizeof(info));
+    memset(&manual, 0, sizeof(manual));
     forget_old_cache();
 
-    /* Manual coordinates need no network: start the radar right away. */
-    bool have = manual_location(&info);
-    if (have) {
-        adsb_set_home(info.lat, info.lon);
-        radar_ui_set_location(&info);
+    /* Manual coordinates (if set) start the radar right away, before any network. */
+    bool have_manual = manual_location(&manual);
+    if (have_manual) {
+        adsb_set_home(manual.lat, manual.lon);
+        radar_ui_set_location(&manual);
     }
 
     wifi_wait_connected(portMAX_DELAY);
@@ -313,20 +315,34 @@ static void location_task(void *arg)
         vTaskDelete(NULL);
         return;
     }
+
+    /* Precedence: precise Wi-Fi fix > manual coordinates > approximate (IP) fix. */
+    bool have = locate_wifi(&info, resp);
+    if (have && info.src == LOC_SRC_WIFI) {
+        ESP_LOGI(TAG, "Precise Wi-Fi fix (%d m)%s", info.accuracy_m,
+                 have_manual ? "; overriding manual coordinates" : "");
+    } else if (have_manual) {
+        ESP_LOGI(TAG, "No precise Wi-Fi fix; keeping manual coordinates");
+        info = manual;
+        have = true;
+    } else if (!have) {
+        have = locate_ip(&info, resp);
+    }
+
     if (!have) {
-        have = locate_wifi(&info, resp) || locate_ip(&info, resp);
-        if (!have) {
-            ESP_LOGE(TAG, "Automatic location failed; set coordinates in menuconfig");
-            info.failed = true;
-            radar_ui_set_location(&info);
-            free(resp);
-            vTaskDelete(NULL);
-            return;
-        }
-        ESP_LOGI(TAG, "Located via %s: %.5f, %.5f (accuracy %d m)", location_source_name(info.src),
-                 info.lat, info.lon, info.accuracy_m);
-        adsb_set_home(info.lat, info.lon);
-        radar_ui_set_location(&info); /* show coordinates while the name loads */
+        ESP_LOGE(TAG, "Automatic location failed; set coordinates in menuconfig");
+        info.failed = true;
+        radar_ui_set_location(&info);
+        free(resp);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Centre via %s: %.5f, %.5f (accuracy %d m)", location_source_name(info.src),
+             info.lat, info.lon, info.accuracy_m);
+    if (info.src != LOC_SRC_MANUAL) {
+        adsb_set_home(info.lat, info.lon); /* manual was already applied */
+        radar_ui_set_location(&info);      /* show coordinates while the name loads */
     }
 
     reverse_geocode(&info, resp);

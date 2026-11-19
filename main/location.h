@@ -23,9 +23,9 @@ typedef struct {
 } loc_info_t;
 
 /**
- * Work out the radar centre once, at start-up, in a background task:
- * menuconfig coordinates if set; otherwise Wi-Fi scan -> beaconDB, then the
- * internet address -> ipinfo.io. Then looks up the town name (OpenStreetMap
+ * Work out the radar centre once, at start-up, in a background task.
+ * Precedence: precise Wi-Fi fix (beaconDB) > menuconfig coordinates >
+ * approximate internet-address fix (ipinfo.io). Then looks up the town name (OpenStreetMap
  * Nominatim, one request) and hands everything to adsb_set_home() and
  * radar_ui_set_location(). Nothing is saved between boots.
  */
