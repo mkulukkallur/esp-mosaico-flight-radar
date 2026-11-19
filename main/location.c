@@ -1,15 +1,19 @@
 /*
- * Automatic location for the radar centre.
+ * Radar centre, determined once per start-up. Nothing is stored between boots.
  *
+ *  0. Manual: menuconfig latitude/longitude, if both are set.
  *  1. Wi-Fi: scan nearby access points and ask beaconDB (an open, Mozilla
  *     Location Service compatible database). Only router MAC addresses and
- *     signal strengths are sent; networks marked "_nomap" and randomised
+ *     signal strengths are sent; networks named "*_nomap" and randomised
  *     (locally administered) MACs are skipped.
- *  2. IP: if that fails, ipinfo.io's public endpoint (city-level, no account).
- *  3. Otherwise keep the last saved fix, or the menuconfig coordinates.
+ *  2. IP: ipinfo.io's public endpoint (city level, can be miles off).
  *
- * A successful fix is saved in NVS so the next boot starts in the right place.
+ * The town name comes from one OpenStreetMap Nominatim reverse lookup per
+ * boot, with an identifying User-Agent, per the Nominatim usage policy
+ * (https://operations.osmfoundation.org/policies/nominatim/). Data (c)
+ * OpenStreetMap contributors, ODbL.
  */
+#include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,20 +34,20 @@
 
 static const char *TAG = "location";
 
-#define NVS_NS "fradar"
+#define USER_AGENT "esp-mosaico-flight-radar/1.3 (+https://github.com/mkulukkallur/esp-mosaico-flight-radar)"
 #define MAX_APS 20
-#define RESP_MAX 2048
-/* A Wi-Fi fix should be within a few hundred metres; anything coarser than
- * this came from beaconDB's IP/cell fallback and is reported as IP. */
+#define RESP_MAX 4096
+/* A Wi-Fi fix should be within a few hundred metres; anything coarser came
+ * from beaconDB's own IP/cell fallback and is reported as IP. */
 #define WIFI_ACCURACY_MAX_M 2000
 
 const char *location_source_name(loc_source_t src)
 {
     switch (src) {
-    case LOC_SRC_WIFI: return "WIFI";
-    case LOC_SRC_IP:   return "IP";
-    case LOC_SRC_SAVED: return "SAVED";
-    default:           return "MANUAL";
+    case LOC_SRC_WIFI:   return "WIFI";
+    case LOC_SRC_IP:     return "IP";
+    case LOC_SRC_MANUAL: return "MANUAL";
+    default:             return "NONE";
     }
 }
 
@@ -53,48 +57,25 @@ static bool valid(double lat, double lon)
            !(lat == 0 && lon == 0);
 }
 
-/* ---------- NVS cache ---------- */
-
-static bool load_saved(double *lat, double *lon)
+static void copy_upper(char *dst, size_t n, const char *src)
 {
-    nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) {
-        return false;
+    size_t i = 0;
+    for (; src && src[i] && i < n - 1; i++) {
+        dst[i] = (char)toupper((unsigned char)src[i]);
     }
-    double v[2];
-    size_t len = sizeof(v);
-    bool ok = nvs_get_blob(h, "home", v, &len) == ESP_OK && len == sizeof(v) && valid(v[0], v[1]);
-    nvs_close(h);
-    if (ok) {
-        *lat = v[0];
-        *lon = v[1];
-    }
-    return ok;
+    dst[i] = '\0';
 }
 
-static void save(double lat, double lon)
+/* Earlier builds (v1.2) cached the fix in NVS; remove it so it is never used. */
+static void forget_old_cache(void)
 {
     nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
-        return;
+    if (nvs_open("fradar", NVS_READWRITE, &h) == ESP_OK) {
+        if (nvs_erase_all(h) == ESP_OK) {
+            nvs_commit(h);
+        }
+        nvs_close(h);
     }
-    double v[2] = {lat, lon};
-    if (nvs_set_blob(h, "home", v, sizeof(v)) == ESP_OK) {
-        nvs_commit(h);
-    }
-    nvs_close(h);
-}
-
-loc_source_t location_initial(double *lat, double *lon)
-{
-    *lat = strtod(CONFIG_FR_HOME_LAT, NULL);
-    *lon = strtod(CONFIG_FR_HOME_LON, NULL);
-#if CONFIG_FR_LOCATION_AUTO
-    if (load_saved(lat, lon)) {
-        return LOC_SRC_SAVED;
-    }
-#endif
-    return LOC_SRC_MANUAL;
 }
 
 /* ---------- small HTTPS helper ---------- */
@@ -107,7 +88,7 @@ static int http_request(const char *url, const char *body, char *resp, size_t re
         .method = body ? HTTP_METHOD_POST : HTTP_METHOD_GET,
         .timeout_ms = 10000,
         .crt_bundle_attach = esp_crt_bundle_attach,
-        .user_agent = "esp-mosaico-flight-radar/1.2",
+        .user_agent = USER_AGENT,
     };
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) {
@@ -119,6 +100,7 @@ static int http_request(const char *url, const char *body, char *resp, size_t re
         esp_http_client_set_header(c, "Content-Type", "application/json");
     }
     int status = -2;
+    resp[0] = '\0';
     if (esp_http_client_open(c, body_len) == ESP_OK) {
         if (!body || esp_http_client_write(c, body, body_len) == body_len) {
             (void)esp_http_client_fetch_headers(c);
@@ -136,9 +118,9 @@ static int http_request(const char *url, const char *body, char *resp, size_t re
     return status;
 }
 
-/* ---------- Wi-Fi geolocation (beaconDB) ---------- */
+/* ---------- 1. Wi-Fi geolocation (beaconDB) ---------- */
 
-static bool locate_wifi(double *lat, double *lon, int *accuracy_m)
+static bool locate_wifi(loc_info_t *out, char *resp)
 {
     if (esp_wifi_scan_start(NULL, true) != ESP_OK) {
         ESP_LOGW(TAG, "Wi-Fi scan failed");
@@ -188,98 +170,173 @@ static bool locate_wifi(double *lat, double *lon, int *accuracy_m)
     if (!body) {
         return false;
     }
-    char *resp = malloc(RESP_MAX);
     bool ok = false;
-    if (resp) {
-        int st = http_request(CONFIG_FR_WIFI_GEO_URL, body, resp, RESP_MAX);
-        if (st == 200) {
-            cJSON *r = cJSON_Parse(resp);
-            const cJSON *loc = cJSON_GetObjectItemCaseSensitive(r, "location");
-            const cJSON *la = cJSON_GetObjectItemCaseSensitive(loc, "lat");
-            const cJSON *lo = cJSON_GetObjectItemCaseSensitive(loc, "lng");
-            const cJSON *acc = cJSON_GetObjectItemCaseSensitive(r, "accuracy");
-            if (cJSON_IsNumber(la) && cJSON_IsNumber(lo) && valid(la->valuedouble, lo->valuedouble)) {
-                *lat = la->valuedouble;
-                *lon = lo->valuedouble;
-                *accuracy_m = cJSON_IsNumber(acc) ? (int)acc->valuedouble : 0;
-                ok = true;
-            }
-            cJSON_Delete(r);
-        } else {
-            ESP_LOGW(TAG, "beaconDB returned %d", st);
-        }
-        free(resp);
-    }
+    int st = http_request(CONFIG_FR_WIFI_GEO_URL, body, resp, RESP_MAX);
     cJSON_free(body);
+    if (st != 200) {
+        ESP_LOGW(TAG, "beaconDB returned %d", st);
+        return false;
+    }
+    cJSON *r = cJSON_Parse(resp);
+    const cJSON *loc = cJSON_GetObjectItemCaseSensitive(r, "location");
+    const cJSON *la = cJSON_GetObjectItemCaseSensitive(loc, "lat");
+    const cJSON *lo = cJSON_GetObjectItemCaseSensitive(loc, "lng");
+    const cJSON *acc = cJSON_GetObjectItemCaseSensitive(r, "accuracy");
+    if (cJSON_IsNumber(la) && cJSON_IsNumber(lo) && valid(la->valuedouble, lo->valuedouble)) {
+        out->lat = la->valuedouble;
+        out->lon = lo->valuedouble;
+        out->accuracy_m = cJSON_IsNumber(acc) ? (int)acc->valuedouble : 0;
+        out->src = (out->accuracy_m > 0 && out->accuracy_m <= WIFI_ACCURACY_MAX_M) ? LOC_SRC_WIFI
+                                                                                   : LOC_SRC_IP;
+        ok = true;
+    }
+    cJSON_Delete(r);
     return ok;
 }
 
-/* ---------- IP geolocation (ipinfo.io) ---------- */
+/* ---------- 2. IP geolocation (ipinfo.io) ---------- */
 
-static bool locate_ip(double *lat, double *lon)
+static bool locate_ip(loc_info_t *out, char *resp)
 {
-    char *resp = malloc(RESP_MAX);
-    if (!resp) {
+    int st = http_request(CONFIG_FR_IP_GEO_URL, NULL, resp, RESP_MAX);
+    if (st != 200) {
+        ESP_LOGW(TAG, "ipinfo returned %d", st);
         return false;
     }
     bool ok = false;
-    int st = http_request(CONFIG_FR_IP_GEO_URL, NULL, resp, RESP_MAX);
-    if (st == 200) {
-        cJSON *r = cJSON_Parse(resp);
-        const cJSON *loc = cJSON_GetObjectItemCaseSensitive(r, "loc"); /* "40.44,-74.48" */
-        if (cJSON_IsString(loc) && loc->valuestring) {
-            char *end;
-            double a = strtod(loc->valuestring, &end);
-            if (*end == ',') {
-                double b = strtod(end + 1, NULL);
-                if (valid(a, b)) {
-                    *lat = a;
-                    *lon = b;
-                    ok = true;
+    cJSON *r = cJSON_Parse(resp);
+    const cJSON *loc = cJSON_GetObjectItemCaseSensitive(r, "loc"); /* "40.73,-74.17" */
+    if (cJSON_IsString(loc) && loc->valuestring) {
+        char *end;
+        double a = strtod(loc->valuestring, &end);
+        if (*end == ',') {
+            double b = strtod(end + 1, NULL);
+            if (valid(a, b)) {
+                out->lat = a;
+                out->lon = b;
+                out->src = LOC_SRC_IP;
+                out->accuracy_m = 0;
+                /* Fallback names, replaced by the reverse lookup if it works. */
+                const cJSON *city = cJSON_GetObjectItemCaseSensitive(r, "city");
+                const cJSON *postal = cJSON_GetObjectItemCaseSensitive(r, "postal");
+                if (cJSON_IsString(city)) {
+                    copy_upper(out->place, sizeof(out->place), city->valuestring);
                 }
+                if (cJSON_IsString(postal)) {
+                    copy_upper(out->postcode, sizeof(out->postcode), postal->valuestring);
+                }
+                ok = true;
             }
         }
-        cJSON_Delete(r);
-    } else {
-        ESP_LOGW(TAG, "ipinfo returned %d", st);
     }
-    free(resp);
+    cJSON_Delete(r);
     return ok;
+}
+
+/* ---------- town name (OpenStreetMap Nominatim) ---------- */
+
+static void reverse_geocode(loc_info_t *info, char *resp)
+{
+    char url[256];
+    snprintf(url, sizeof(url), "%s?format=jsonv2&lat=%.5f&lon=%.5f&zoom=14&addressdetails=1&accept-language=en",
+             CONFIG_FR_REVGEO_URL, info->lat, info->lon);
+    int st = http_request(url, NULL, resp, RESP_MAX);
+    if (st != 200) {
+        ESP_LOGW(TAG, "Nominatim returned %d", st);
+        return;
+    }
+    cJSON *r = cJSON_Parse(resp);
+    const cJSON *addr = cJSON_GetObjectItemCaseSensitive(r, "address");
+    if (cJSON_IsObject(addr)) {
+        static const char *const keys[] = {"town", "city", "village", "hamlet",
+                                           "suburb", "municipality", "county"};
+        for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+            const cJSON *v = cJSON_GetObjectItemCaseSensitive(addr, keys[i]);
+            if (cJSON_IsString(v) && v->valuestring[0]) {
+                copy_upper(info->place, sizeof(info->place), v->valuestring);
+                break;
+            }
+        }
+        const cJSON *pc = cJSON_GetObjectItemCaseSensitive(addr, "postcode");
+        if (cJSON_IsString(pc)) {
+            copy_upper(info->postcode, sizeof(info->postcode), pc->valuestring);
+        }
+        /* "ISO3166-2-lvl4": "US-NJ" -> "NJ" */
+        const cJSON *iso = cJSON_GetObjectItemCaseSensitive(addr, "ISO3166-2-lvl4");
+        if (cJSON_IsString(iso)) {
+            const char *dash = strchr(iso->valuestring, '-');
+            copy_upper(info->region, sizeof(info->region), dash ? dash + 1 : iso->valuestring);
+        }
+    }
+    cJSON_Delete(r);
 }
 
 /* ---------- task ---------- */
 
+static bool manual_location(loc_info_t *info)
+{
+    if (!CONFIG_FR_MANUAL_LAT[0] || !CONFIG_FR_MANUAL_LON[0]) {
+        return false;
+    }
+    double lat = strtod(CONFIG_FR_MANUAL_LAT, NULL);
+    double lon = strtod(CONFIG_FR_MANUAL_LON, NULL);
+    if (!valid(lat, lon)) {
+        ESP_LOGW(TAG, "Ignoring invalid manual location \"%s\", \"%s\"", CONFIG_FR_MANUAL_LAT,
+                 CONFIG_FR_MANUAL_LON);
+        return false;
+    }
+    info->lat = lat;
+    info->lon = lon;
+    info->src = LOC_SRC_MANUAL;
+    return true;
+}
+
 static void location_task(void *arg)
 {
     (void)arg;
+    loc_info_t info;
+    memset(&info, 0, sizeof(info));
+    forget_old_cache();
+
+    /* Manual coordinates need no network: start the radar right away. */
+    bool have = manual_location(&info);
+    if (have) {
+        adsb_set_home(info.lat, info.lon);
+        radar_ui_set_location(&info);
+    }
+
     wifi_wait_connected(portMAX_DELAY);
     vTaskDelay(pdMS_TO_TICKS(1500)); /* let DHCP/DNS settle */
 
-    double lat, lon;
-    int acc = 0;
-    loc_source_t src;
-    if (locate_wifi(&lat, &lon, &acc)) {
-        src = (acc > 0 && acc <= WIFI_ACCURACY_MAX_M) ? LOC_SRC_WIFI : LOC_SRC_IP;
-    } else if (locate_ip(&lat, &lon)) {
-        src = LOC_SRC_IP;
-        acc = 0;
-    } else {
-        ESP_LOGW(TAG, "Automatic location failed; keeping current centre");
-        radar_ui_set_location(LOC_SRC_MANUAL, -1);
+    char *resp = malloc(RESP_MAX);
+    if (!resp) {
         vTaskDelete(NULL);
         return;
     }
+    if (!have) {
+        have = locate_wifi(&info, resp) || locate_ip(&info, resp);
+        if (!have) {
+            ESP_LOGE(TAG, "Automatic location failed; set coordinates in menuconfig");
+            info.failed = true;
+            radar_ui_set_location(&info);
+            free(resp);
+            vTaskDelete(NULL);
+            return;
+        }
+        ESP_LOGI(TAG, "Located via %s: %.5f, %.5f (accuracy %d m)", location_source_name(info.src),
+                 info.lat, info.lon, info.accuracy_m);
+        adsb_set_home(info.lat, info.lon);
+        radar_ui_set_location(&info); /* show coordinates while the name loads */
+    }
 
-    ESP_LOGI(TAG, "Located via %s: %.4f, %.4f (accuracy %d m)", location_source_name(src), lat, lon, acc);
-    save(lat, lon);
-    adsb_set_home(lat, lon);
-    radar_ui_set_location(src, acc);
+    reverse_geocode(&info, resp);
+    ESP_LOGI(TAG, "Place: %s %s %s", info.place, info.region, info.postcode);
+    radar_ui_set_location(&info);
+    free(resp);
     vTaskDelete(NULL);
 }
 
-void location_start_auto(void)
+void location_start(void)
 {
-#if CONFIG_FR_LOCATION_AUTO
     xTaskCreate(location_task, "location", 10 * 1024, NULL, 3, NULL);
-#endif
 }

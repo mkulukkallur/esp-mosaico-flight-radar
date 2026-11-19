@@ -2,8 +2,8 @@
 
 ![preview](preview.png)
 
-A green-phosphor radar showing live aircraft around North Brunswick, NJ (or anywhere
-you set), installed as a **normal Mosaico app next to Vibe Mode**. Vibe Mode, your
+A green-phosphor radar showing live aircraft around wherever the Mosaico is,
+installed as a **normal Mosaico app next to Vibe Mode**. Vibe Mode, your
 Ideas and your settings stay in place.
 
 * Rotating sweep. Aircraft light up as it passes, then fade. Heading lines show direction; longer means faster.
@@ -11,7 +11,7 @@ Ideas and your settings stay in place.
 * Blinking **OVERHEAD!** when a plane is within ~1 mile.
 * **Tap the screen** to cycle the range: 2 / 5 / 10 / 25 mi.
 * Uses the **Wi-Fi saved in Vibe Mode** automatically.
-* **Finds its own location** at start-up: nearby Wi-Fi networks first, then the internet (IP) address. The fix is saved for the next boot.
+* **Finds its own location** at every start-up: nearby Wi-Fi networks first, then the internet (IP) address. Town, state, ZIP, coordinates and source are shown in the top-left corner.
 * Data: [adsb.fi](https://adsb.fi) open data, refreshed every 10 s (personal, non-commercial use).
 
 ## Requirements
@@ -48,26 +48,40 @@ run `python mosaico.py recover` once, then run `system-update` again.
 | Reinstall after code changes | `python mosaico.py iris app-update --project projects/flight_radar` |
 | Get back to Vibe Mode | Hold the **AI** button while powering on |
 | Change location / units / API | `idf.py -C projects/flight_radar menuconfig` → *Flight Radar*, then `system-update` |
-| Fix the location by hand | menuconfig → *Flight Radar* → untick *Find location automatically*, set the fallback latitude/longitude |
+| Fix the location by hand | menuconfig → *Flight Radar* → set *Manual latitude* and *Manual longitude* (leave empty for automatic) |
 
 Logs go through ESP-Iris over USB (`iris logs`). Plain `idf.py monitor` won't show them,
 because the console is on UART in Mosaico apps.
 
-## Automatic location
+## Location
 
-At each start-up, once Wi-Fi is connected, the radar:
+There is no built-in default location. At every start-up the radar works out where it is,
+once, and nothing is saved between boots:
 
-1. Scans nearby Wi-Fi networks and sends their router MAC addresses and signal
-   strengths (never network names) to [beaconDB](https://beacondb.net), an open
-   location database. It skips networks whose names end in `_nomap` and randomised MACs.
-2. If that fails or only gives a rough estimate, it uses [ipinfo.io](https://ipinfo.io)
-   (city-level, from the internet address).
-3. If both fail, it keeps the last saved fix, or the fallback coordinates in menuconfig.
+1. **Manual:** if *Manual latitude/longitude* are set in menuconfig, those are used.
+2. **Wi-Fi:** otherwise, it scans nearby Wi-Fi networks and sends their router MAC
+   addresses and signal strengths (never network names) to [beaconDB](https://beacondb.net),
+   an open location database. It skips networks whose names end in `_nomap` and randomised MACs.
+3. **IP:** if that fails, it uses [ipinfo.io](https://ipinfo.io), which is city-level from
+   your internet address and can be many miles off.
 
-The footer briefly shows `LOCATED BY WIFI +-35M` (or `IP`), and the radar
-re-centres. beaconDB is community-built, so Wi-Fi coverage may be thin in some
-areas. Rough IP estimates can be several miles off. If yours is, turn auto-location
-off and enter your coordinates.
+It then looks up the town name with one request to OpenStreetMap's
+[Nominatim](https://nominatim.org), following its
+[usage policy](https://operations.osmfoundation.org/policies/nominatim/): one request per start-up,
+with an identifying User-Agent. Place data © OpenStreetMap contributors (ODbL), credited as `OSM` on screen.
+
+The top-left corner shows, for example:
+
+```
+NORTH BRUNSWICK
+NJ 08902
+40.477 -74.483
+WIFI +-35M        <- or IP (APPROX) / MANUAL
+```
+
+If it says `IP (APPROX)` and the town is wrong, beaconDB has no Wi-Fi data for your area yet.
+Set the manual coordinates instead. If every method fails, the corner shows `NO LOCATION`
+and the radar waits.
 
 ## What differs from a standalone ESP-IDF project
 

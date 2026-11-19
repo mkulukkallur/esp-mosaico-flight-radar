@@ -31,10 +31,6 @@ void app_main(void)
     /* Vibe Mode / update support must stay reachable whatever happens next. */
     iris_ota_support_start();
 
-    double lat, lon;
-    loc_source_t src = location_initial(&lat, &lon);
-    ESP_LOGI(TAG, "Start centre %.4f, %.4f (%s)", lat, lon, location_source_name(src));
-
     /* Larger LVGL task stack than the adapter default: the radar redraws many
      * objects and formats text inside LVGL timers and input callbacks. */
     bsp_display_config_t disp_cfg = BSP_DISPLAY_DEFAULT_CONFIG();
@@ -72,7 +68,7 @@ void app_main(void)
     esp_sntp_config_t sntp = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
     esp_netif_sntp_init(&sntp);
 
-    adsb_start(lat, lon, radar_ui_range_km());
-    location_start_auto();
+    adsb_start(radar_ui_range_km()); /* waits for the location */
+    location_start();                /* works out the location once, now */
     ESP_LOGI(TAG, "Flight radar running");
 }

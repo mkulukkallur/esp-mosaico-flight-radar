@@ -12,7 +12,8 @@
  *   |              S                            |
  *   | CALLSIGN  DIST MI ALT FT SPD KT TRK      |  nearest 4 aircraft
  *   | ...                                       |
- *   | OVERHEAD!           10MI  UPD 3s  ADSB.FI |  footer
+ *   | OVERHEAD!       10MI  UPD 3s  ADSB.FI/OSM |  footer
+ *   (top-left corner, outside the ring: town, state + ZIP, lat/lon, source)
  *   +------------------------------------------+
  *
  * Tap anywhere to cycle the range. All updates run in LVGL timers, so no
@@ -24,6 +25,8 @@
 #include <string.h>
 #include <time.h>
 #include "lvgl.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "esp_timer.h"
 #include "sdkconfig.h"
 #include "adsb.h"
@@ -88,6 +91,7 @@ static lv_obj_t *s_sweep_line;
 static lv_point_precise_t s_sweep_pts[2];
 static lv_obj_t *s_lbl_header, *s_lbl_footer, *s_lbl_alert;
 static lv_obj_t *s_lbl_ring[3];
+static lv_obj_t *s_lbl_loc[4];
 static lv_obj_t *s_cells[TABLE_ROWS][5];
 static adsb_snapshot_t s_snap;
 static uint32_t s_seq;
@@ -95,18 +99,59 @@ static bool s_have_data;
 static bool s_overhead;
 static volatile bool s_no_wifi;
 static volatile bool s_tap_pending;
-static volatile int s_loc_src = -1, s_loc_acc;
-static volatile int64_t s_loc_until_us;
+static SemaphoreHandle_t s_loc_mtx;
+static loc_info_t s_loc_pending;      /* written by the location task */
+static volatile uint32_t s_loc_seq;   /* bumped on every update */
+static uint32_t s_loc_seen;
+static loc_info_t s_loc;              /* LVGL task copy */
 static double s_sweep_deg;
 
 /* unscii_16 is 16 px per character: CALLSIGN(8) DIST(4) ALT(5) SPD(3) TRK(3) */
 static const int k_col_x[5] = {18, 162, 246, 346, 414};
 
-void radar_ui_set_location(int src, int accuracy_m)
+static void set_text(lv_obj_t *l, const char *txt);
+
+void radar_ui_set_location(const loc_info_t *info)
 {
-    s_loc_src = src;
-    s_loc_acc = accuracy_m;
-    s_loc_until_us = esp_timer_get_time() + 15 * 1000000LL; /* show for 15 s */
+    if (!s_loc_mtx) {
+        return;
+    }
+    xSemaphoreTake(s_loc_mtx, portMAX_DELAY);
+    s_loc_pending = *info;
+    s_loc_seq++;
+    xSemaphoreGive(s_loc_mtx);
+}
+
+/* Runs in the LVGL task. Corner sits outside the ring: <= 15 characters wide. */
+static void update_location_labels(void)
+{
+    if (!s_loc_mtx || s_loc_seq == s_loc_seen) {
+        return;
+    }
+    xSemaphoreTake(s_loc_mtx, portMAX_DELAY);
+    s_loc = s_loc_pending;
+    s_loc_seen = s_loc_seq;
+    xSemaphoreGive(s_loc_mtx);
+
+    char l[4][24] = {{0}};
+    if (s_loc.failed) {
+        snprintf(l[0], sizeof(l[0]), "NO LOCATION");
+    } else if (s_loc.src != LOC_SRC_NONE) {
+        snprintf(l[0], sizeof(l[0]), "%.15s", s_loc.place[0] ? s_loc.place : "LOCATED");
+        snprintf(l[1], sizeof(l[1]), "%.4s%s%.8s", s_loc.region,
+                 (s_loc.region[0] && s_loc.postcode[0]) ? " " : "", s_loc.postcode);
+        snprintf(l[2], sizeof(l[2]), "%.3f %.3f", s_loc.lat, s_loc.lon);
+        if (s_loc.src == LOC_SRC_WIFI && s_loc.accuracy_m > 0) {
+            snprintf(l[3], sizeof(l[3]), "WIFI +-%dM", s_loc.accuracy_m);
+        } else if (s_loc.src == LOC_SRC_IP) {
+            snprintf(l[3], sizeof(l[3]), "IP (APPROX)");
+        } else {
+            snprintf(l[3], sizeof(l[3]), "%s", location_source_name(s_loc.src));
+        }
+    }
+    for (int i = 0; i < 4; i++) {
+        set_text(s_lbl_loc[i], l[i]);
+    }
 }
 
 void radar_ui_set_no_wifi(void)
@@ -315,22 +360,17 @@ static void update_status(void)
         snprintf(txt, sizeof(txt), "NO WIFI: SET IT IN VIBE MODE");
     } else if (!wifi_is_connected()) {
         snprintf(txt, sizeof(txt), "CONNECTING WIFI...");
-    } else if (s_loc_src >= 0 && esp_timer_get_time() < s_loc_until_us) {
-        if (s_loc_acc < 0) {
-            snprintf(txt, sizeof(txt), "LOCATION: AUTO FAILED");
-        } else if (s_loc_acc > 0 && s_loc_acc < 100000) {
-            snprintf(txt, sizeof(txt), "LOCATED BY %s +-%dM", location_source_name((loc_source_t)s_loc_src),
-                     s_loc_acc);
-        } else {
-            snprintf(txt, sizeof(txt), "LOCATED BY %s", location_source_name((loc_source_t)s_loc_src));
-        }
+    } else if (s_loc.failed) {
+        snprintf(txt, sizeof(txt), "SET LOCATION IN MENUCONFIG");
+    } else if (s_loc.src == LOC_SRC_NONE) {
+        snprintf(txt, sizeof(txt), "LOCATING...");
     } else if (!s_have_data && s_seq == 0) {
-        snprintf(txt, sizeof(txt), "LOADING...  ADSB.FI");
+        snprintf(txt, sizeof(txt), "LOADING...  ADSB.FI/OSM");
     } else if (!s_snap.ok) {
         snprintf(txt, sizeof(txt), "API ERR %d  %d%s", s_snap.status, k_ranges[s_range_idx], UNIT_STR);
     } else {
         int age = (int)((esp_timer_get_time() - s_snap.fetched_us) / 1000000);
-        snprintf(txt, sizeof(txt), "%d%s  UPD %ds  ADSB.FI", k_ranges[s_range_idx], UNIT_STR, age);
+        snprintf(txt, sizeof(txt), "%d%s  UPD %ds  ADSB.FI/OSM", k_ranges[s_range_idx], UNIT_STR, age);
     }
     set_text(s_lbl_footer, txt);
 
@@ -384,6 +424,7 @@ static void sweep_timer_cb(lv_timer_t *t)
 static void data_timer_cb(lv_timer_t *t)
 {
     (void)t;
+    update_location_labels();
     if (s_tap_pending) {
         s_tap_pending = false;
         apply_range_change();
@@ -499,6 +540,12 @@ void radar_ui_create(void)
 
     /* header */
     mk_label(&lv_font_unscii_16, C_GREEN, SAFE_X, HEADER_Y, "FLIGHT RADAR");
+
+    /* location block, top-left outside the ring */
+    s_loc_mtx = xSemaphoreCreateMutex();
+    for (int i = 0; i < 4; i++) {
+        s_lbl_loc[i] = mk_label(&lv_font_unscii_8, i == 3 ? C_MID : C_GREEN, 18, 50 + 10 * i, "");
+    }
     s_lbl_header = mk_label(&lv_font_unscii_16, C_GREEN, 0, 0, "");
     lv_obj_align(s_lbl_header, LV_ALIGN_TOP_RIGHT, -SAFE_X, HEADER_Y);
 

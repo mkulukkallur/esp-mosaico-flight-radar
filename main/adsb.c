@@ -34,6 +34,7 @@ static adsb_snapshot_t s_shared; /* guarded by s_mtx */
 static adsb_snapshot_t s_work;   /* fetch task only */
 static double s_lat, s_lon;           /* fetch task copy */
 static double s_home_lat, s_home_lon; /* guarded by s_mtx */
+static volatile bool s_have_home;
 static volatile double s_radius_km = 16;
 static char *s_buf;
 static size_t s_cap;
@@ -256,6 +257,9 @@ static void fetch_task(void *arg)
     char url[192];
     for (;;) {
         wifi_wait_connected(portMAX_DELAY);
+        while (!s_have_home) {
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY); /* woken by adsb_set_home() */
+        }
 
         xSemaphoreTake(s_mtx, portMAX_DELAY);
         s_lat = s_home_lat;
@@ -300,10 +304,8 @@ static void fetch_task(void *arg)
     }
 }
 
-void adsb_start(double home_lat, double home_lon, double radius_km)
+void adsb_start(double radius_km)
 {
-    s_lat = s_home_lat = home_lat;
-    s_lon = s_home_lon = home_lon;
     s_radius_km = radius_km;
     cJSON_Hooks hooks = {.malloc_fn = json_malloc, .free_fn = json_free};
     cJSON_InitHooks(&hooks); /* global: also covers location.c */
@@ -319,6 +321,7 @@ void adsb_set_home(double lat, double lon)
     xSemaphoreTake(s_mtx, portMAX_DELAY);
     s_home_lat = lat;
     s_home_lon = lon;
+    s_have_home = true;
     xSemaphoreGive(s_mtx);
     if (s_task) {
         xTaskNotifyGive(s_task);

@@ -31,8 +31,8 @@ typedef struct {
     uint32_t seq;                     /* increments after every fetch attempt */
 } adsb_snapshot_t;
 
-/** Start the background fetch task. */
-void adsb_start(double home_lat, double home_lon, double radius_km);
+/** Start the background fetch task. It waits until adsb_set_home() is called. */
+void adsb_start(double radius_km);
 
 /** Re-centre the radar on a new home position (wakes the fetch task). Any task. */
 void adsb_set_home(double lat, double lon);
