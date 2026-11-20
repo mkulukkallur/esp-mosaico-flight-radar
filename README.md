@@ -200,7 +200,10 @@ toolkit at this workspace's version has no build-only command; `system-update` i
 
 ```bat
 python -m pip install "jsonschema>=4.23,<5" "markdown-it-py>=3,<5" "Pillow>=10.4,<12"
+python -m pip install -r submodule\esp-mosaico-utils\ESP-Iris\components\esp_iris\tools\requirements.txt
 ```
+
+The second line installs ESP-Iris's tools (e.g. `cryptography`), which check the `.irisfw` inside the package.
 
 **3. Package and validate the store ZIP** (offline):
 
