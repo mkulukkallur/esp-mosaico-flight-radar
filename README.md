@@ -212,16 +212,27 @@ python mosaico.py project package --project projects/flight_radar --output dist\
 python mosaico.py project validate dist\flight_radar-1.6.0.zip --json
 ```
 
-**4. Upload as a draft** (needs an ESP-Mosaico account). Upload creates a **draft**; publishing is a separate step on the website:
+**4. Publish on [mosaico.ai](https://mosaico.ai).** Sign in, create a new **Software** Idea, and fill in
+the form. Under **Software Files**, upload the firmware itself:
 
-```bat
-python mosaico.py account login
-python mosaico.py project upload dist\flight_radar-1.6.0.zip --create
+```
+projects\flight_radar\build\flight_radar-system-update.irisfw
 ```
 
-For later versions, bump the version in `CMakeLists.txt`, add a `CHANGELOG.md` entry, rebuild,
-re-package, and use `--update APPLICATION_ID --expected-project-version N` with the ID and draft
-version returned by the previous upload.
+Use the copy from your latest `system-update` build, so it matches the version in `CMakeLists.txt`.
+The other fields (title, summary, category, GitHub link, images, Markdown content) come from this
+README and `mosaico-ideas.json`.
+
+*Command-line upload (currently broken):* `mosaico.py` can upload the step-3 ZIP as a draft
+(`python mosaico.py account login`, then `python mosaico.py project upload dist\flight_radar-1.6.0.zip --create`).
+With the toolkit this workspace pins (`esp-mosaico-utils` be151ae), it fails with
+*"Account response has no stable user ID"*: mosaico.ai returns a numeric user ID, and that version
+only accepts text. Espressif's newer toolkit code no longer has this check, but the workspace doesn't use
+it yet. Until it does, use the website. Step 3 is still worth running: it validates the `.irisfw` and
+all the store files offline.
+
+For later versions, bump the version in `CMakeLists.txt`, add a `CHANGELOG.md` entry, rebuild with
+`system-update`, re-run step 3, and upload the new `.irisfw` to your existing Idea on the website.
 
 **Notes:**
 - `mosaico-ideas.json` declares the MIT license and links to this repo.
