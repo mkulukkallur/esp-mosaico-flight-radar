@@ -196,10 +196,10 @@ python mosaico.py iris system-update --project projects/flight_radar
 This creates `projects\flight_radar\build\flight_radar-system-update.irisfw`. The `mosaico.py`
 toolkit at this workspace's version has no build-only command; `system-update` is how it builds the bundle.
 
-**2. Install the packaging dependencies** (once, into the same Python):
+**2. Install the packaging dependencies** (once, into the same Python that runs `mosaico.py`; Pillow is used to check the cover images):
 
 ```bat
-python -m pip install "jsonschema>=4.23,<5" "markdown-it-py>=3,<5"
+python -m pip install "jsonschema>=4.23,<5" "markdown-it-py>=3,<5" "Pillow>=10.4,<12"
 ```
 
 **3. Package and validate the store ZIP** (offline):
