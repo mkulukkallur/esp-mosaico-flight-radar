@@ -64,6 +64,28 @@ menu "Flight Radar"
             bool "Kilometres (ranges 3/8/15/40 km)"
     endchoice
 
+    config FR_OVERHEAD_M
+        int "OVERHEAD! distance in metres"
+        range 200 10000
+        default 1609
+        help
+            An airborne aircraft closer than this (horizontally) triggers the
+            blinking OVERHEAD! sign and the alert. 1609 m = 1 mile.
+
+    config FR_ALERT_SOUND
+        bool "Play a chime when an aircraft is overhead"
+        default y
+
+    config FR_ALERT_VOLUME
+        int "Chime volume (0-100)"
+        range 0 100
+        default 60
+        depends on FR_ALERT_SOUND
+
+    config FR_ALERT_VIBRATE
+        bool "Vibrate when an aircraft is overhead"
+        default y
+
     config FR_TIMEZONE
         string "POSIX timezone for the clock"
         default "EST5EDT,M3.2.0,M11.1.0"

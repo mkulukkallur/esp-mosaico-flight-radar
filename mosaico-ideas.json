@@ -1,0 +1,21 @@
+{
+  "schema": "mosaico-ideas/project-release/1",
+  "project": {
+    "title": "Flight Radar",
+    "categories": ["display", "audio"],
+    "tags": ["ads-b", "aircraft", "flight tracker", "radar", "aviation", "wifi"]
+  },
+  "firmware": "build/flight_radar-system-update.irisfw",
+  "website": {
+    "readme": "README.md",
+    "changelog": "CHANGELOG.md",
+    "covers": ["preview.png", "store/icon.png"]
+  },
+  "device": {
+    "default_locale": "en",
+    "presentations": {
+      "zh-CN": {"mode": "prebuilt", "display": "store/device/zh-CN/display.json"},
+      "en": {"mode": "prebuilt", "display": "store/device/en/display.json"}
+    }
+  }
+}

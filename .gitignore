@@ -51,3 +51,6 @@ Thumbs.db
 
 # Mosaico gateway data
 .gateway/
+
+# Store release ZIPs
+dist/
