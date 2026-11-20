@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.6.0
+- Location can be set on the device: add `radar_location` in Vibe Mode > Settings > Shared information (coordinates, a ZIP with country, or a place name). Works for store installs.
+- MIT license; link to the source on GitHub.
+
 ## 1.5.0
 - Chime and short vibration when an aircraft first comes within 1 mile (once per aircraft, at most every 30 s). Configurable in menuconfig.
 - OVERHEAD! distance configurable (default 1 mile).

@@ -22,6 +22,10 @@ menu "Flight Radar"
             So manual coordinates always beat an approximate fix, and are used
             immediately while the Wi-Fi lookup runs. Leave empty for automatic only.
 
+            On a device, the "radar_location" entry in Vibe Mode > Settings >
+            Shared information takes priority over these fields, so store
+            installs can be configured without rebuilding.
+
     config FR_MANUAL_LON
         string "Manual longitude (west is negative)"
         default ""
@@ -40,6 +44,13 @@ menu "Flight Radar"
         help
             OpenStreetMap Nominatim; one request per start-up. Usage policy:
             https://operations.osmfoundation.org/policies/nominatim/
+
+    config FR_GEOCODE_URL
+        string "Place-name lookup (geocoding) URL"
+        default "https://nominatim.openstreetmap.org/search"
+        help
+            Turns a radar_location ZIP code or place name into coordinates.
+            One request per start-up, only when radar_location is not coordinates.
 
     config FR_API_BASE
         string "ADS-B API base URL"
