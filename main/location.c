@@ -5,8 +5,10 @@
  *     Location Service compatible database). Only router MAC addresses and
  *     signal strengths are sent; networks named "*_nomap" and randomised
  *     (locally administered) MACs are skipped. Used if precise (<= 2 km).
- *  2. Manual: menuconfig latitude/longitude, if both are set. Overrides any
- *     approximate result, and is shown immediately while step 1 runs.
+ *  2. Manual: the "radar_location" entry in Vibe Mode > Settings > Shared
+ *     information (coordinates, a ZIP/postal code or a place name), else the
+ *     menuconfig latitude/longitude. Overrides any approximate result; shown
+ *     immediately while step 1 runs (place names after one geocoding lookup).
  *  3. IP: ipinfo.io's public endpoint (city level, can be miles off).
  *
  * The town name comes from one OpenStreetMap Nominatim reverse lookup per
@@ -30,6 +32,7 @@
 #include "sdkconfig.h"
 #include "adsb.h"
 #include "location.h"
+#include "mosaico_shared.h"
 #include "radar_ui.h"
 #include "wifi.h"
 
@@ -41,6 +44,10 @@ static const char *TAG = "location";
 /* A Wi-Fi fix should be within a few hundred metres; anything coarser came
  * from beaconDB's own IP/cell fallback and is reported as IP. */
 #define WIFI_ACCURACY_MAX_M 2000
+#define SHARED_KEY "radar_location"   /* Vibe Mode > Settings > Shared information */
+#define NOMINATIM_GAP_MS 1100         /* Nominatim policy: at most 1 request/second */
+
+static char s_place_query[260];       /* radar_location text that needs geocoding */
 
 const char *location_source_name(loc_source_t src)
 {
@@ -236,6 +243,33 @@ static bool locate_ip(loc_info_t *out, char *resp)
 
 /* ---------- town name (OpenStreetMap Nominatim) ---------- */
 
+/* Town / state / ZIP from a Nominatim "address" object. */
+static void fill_address(loc_info_t *info, const cJSON *addr)
+{
+    if (!cJSON_IsObject(addr)) {
+        return;
+    }
+    static const char *const keys[] = {"town", "city", "village", "hamlet",
+                                       "suburb", "municipality", "county"};
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+        const cJSON *v = cJSON_GetObjectItemCaseSensitive(addr, keys[i]);
+        if (cJSON_IsString(v) && v->valuestring[0]) {
+            copy_upper(info->place, sizeof(info->place), v->valuestring);
+            break;
+        }
+    }
+    const cJSON *pc = cJSON_GetObjectItemCaseSensitive(addr, "postcode");
+    if (cJSON_IsString(pc)) {
+        copy_upper(info->postcode, sizeof(info->postcode), pc->valuestring);
+    }
+    /* "ISO3166-2-lvl4": "US-NJ" -> "NJ" */
+    const cJSON *iso = cJSON_GetObjectItemCaseSensitive(addr, "ISO3166-2-lvl4");
+    if (cJSON_IsString(iso)) {
+        const char *dash = strchr(iso->valuestring, '-');
+        copy_upper(info->region, sizeof(info->region), dash ? dash + 1 : iso->valuestring);
+    }
+}
+
 static void reverse_geocode(loc_info_t *info, char *resp)
 {
     char url[256];
@@ -247,35 +281,103 @@ static void reverse_geocode(loc_info_t *info, char *resp)
         return;
     }
     cJSON *r = cJSON_Parse(resp);
-    const cJSON *addr = cJSON_GetObjectItemCaseSensitive(r, "address");
-    if (cJSON_IsObject(addr)) {
-        static const char *const keys[] = {"town", "city", "village", "hamlet",
-                                           "suburb", "municipality", "county"};
-        for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
-            const cJSON *v = cJSON_GetObjectItemCaseSensitive(addr, keys[i]);
-            if (cJSON_IsString(v) && v->valuestring[0]) {
-                copy_upper(info->place, sizeof(info->place), v->valuestring);
-                break;
-            }
-        }
-        const cJSON *pc = cJSON_GetObjectItemCaseSensitive(addr, "postcode");
-        if (cJSON_IsString(pc)) {
-            copy_upper(info->postcode, sizeof(info->postcode), pc->valuestring);
-        }
-        /* "ISO3166-2-lvl4": "US-NJ" -> "NJ" */
-        const cJSON *iso = cJSON_GetObjectItemCaseSensitive(addr, "ISO3166-2-lvl4");
-        if (cJSON_IsString(iso)) {
-            const char *dash = strchr(iso->valuestring, '-');
-            copy_upper(info->region, sizeof(info->region), dash ? dash + 1 : iso->valuestring);
+    fill_address(info, cJSON_GetObjectItemCaseSensitive(r, "address"));
+    cJSON_Delete(r);
+}
+
+/* Place name or ZIP -> coordinates + names (one Nominatim search). */
+static bool geocode_place(const char *query, loc_info_t *info, char *resp)
+{
+    char q[3 * sizeof(s_place_query)];
+    size_t o = 0;
+    for (const unsigned char *p = (const unsigned char *)query; *p && o + 4 < sizeof(q); p++) {
+        if (isalnum(*p) || strchr("-_.~", *p)) {
+            q[o++] = (char)*p;
+        } else {
+            o += snprintf(q + o, sizeof(q) - o, "%%%02X", *p);
         }
     }
+    q[o] = '\0';
+    char url[1024];
+    snprintf(url, sizeof(url), "%s?format=jsonv2&limit=1&addressdetails=1&accept-language=en&q=%s",
+             CONFIG_FR_GEOCODE_URL, q);
+    int st = http_request(url, NULL, resp, RESP_MAX);
+    if (st != 200) {
+        ESP_LOGW(TAG, "Nominatim search returned %d", st);
+        return false;
+    }
+    bool ok = false;
+    cJSON *r = cJSON_Parse(resp);
+    const cJSON *first = cJSON_IsArray(r) ? cJSON_GetArrayItem(r, 0) : NULL;
+    const cJSON *la = cJSON_GetObjectItemCaseSensitive(first, "lat");
+    const cJSON *lo = cJSON_GetObjectItemCaseSensitive(first, "lon");
+    if (cJSON_IsString(la) && cJSON_IsString(lo)) {
+        double lat = strtod(la->valuestring, NULL), lon = strtod(lo->valuestring, NULL);
+        if (valid(lat, lon)) {
+            info->lat = lat;
+            info->lon = lon;
+            info->src = LOC_SRC_MANUAL;
+            fill_address(info, cJSON_GetObjectItemCaseSensitive(first, "address"));
+            ok = true;
+        }
+    }
+    if (!ok) {
+        ESP_LOGW(TAG, "No match for \"%s\"", query);
+    }
     cJSON_Delete(r);
+    return ok;
 }
 
 /* ---------- task ---------- */
 
+/* "40.4775,-74.4826", "40.4775 -74.4826" or "40.4775, -74.4826" */
+static bool parse_coords(const char *s, double *lat, double *lon)
+{
+    char *end;
+    double a = strtod(s, &end);
+    if (end == s) {
+        return false;
+    }
+    while (*end == ' ' || *end == ',') {
+        end++;
+    }
+    const char *second = end;
+    double b = strtod(second, &end);
+    if (end == second) {
+        return false;
+    }
+    while (*end == ' ') {
+        end++;
+    }
+    if (*end || !valid(a, b)) {
+        return false;
+    }
+    *lat = a;
+    *lon = b;
+    return true;
+}
+
 static bool manual_location(loc_info_t *info)
 {
+    /* 1. Vibe Mode > Settings > Shared information: radar_location */
+    char v[sizeof(s_place_query)];
+    if (mosaico_shared_get(SHARED_KEY, v, sizeof(v)) == ESP_OK) {
+        char *t = v;
+        while (*t == ' ') t++;
+        size_t n = strlen(t);
+        while (n && t[n - 1] == ' ') t[--n] = '\0';
+        if (*t) {
+            if (parse_coords(t, &info->lat, &info->lon)) {
+                ESP_LOGI(TAG, "Using %s from Vibe Mode shared information", SHARED_KEY);
+                info->src = LOC_SRC_MANUAL;
+                return true;
+            }
+            ESP_LOGI(TAG, "%s \"%s\" will be looked up", SHARED_KEY, t);
+            strlcpy(s_place_query, t, sizeof(s_place_query));
+            return false;
+        }
+    }
+    /* 2. menuconfig (developer builds) */
     if (!CONFIG_FR_MANUAL_LAT[0] || !CONFIG_FR_MANUAL_LON[0]) {
         return false;
     }
@@ -316,6 +418,18 @@ static void location_task(void *arg)
         return;
     }
 
+    /* A place name / ZIP in radar_location: look it up once. */
+    bool names_known = false, nominatim_used = false;
+    if (!have_manual && s_place_query[0]) {
+        nominatim_used = true;
+        if (geocode_place(s_place_query, &manual, resp)) {
+            have_manual = names_known = true;
+            ESP_LOGI(TAG, "\"%s\" -> %.5f, %.5f", s_place_query, manual.lat, manual.lon);
+            adsb_set_home(manual.lat, manual.lon);
+            radar_ui_set_location(&manual);
+        }
+    }
+
     /* Precedence: precise Wi-Fi fix > manual coordinates > approximate (IP) fix. */
     bool have = locate_wifi(&info, resp);
     if (have && info.src == LOC_SRC_WIFI) {
@@ -345,7 +459,12 @@ static void location_task(void *arg)
         radar_ui_set_location(&info);      /* show coordinates while the name loads */
     }
 
-    reverse_geocode(&info, resp);
+    if (!(info.src == LOC_SRC_MANUAL && names_known)) {
+        if (nominatim_used) {
+            vTaskDelay(pdMS_TO_TICKS(NOMINATIM_GAP_MS));
+        }
+        reverse_geocode(&info, resp);
+    }
     ESP_LOGI(TAG, "Place: %s %s %s", info.place, info.region, info.postcode);
     radar_ui_set_location(&info);
     free(resp);

@@ -85,6 +85,7 @@ python mosaico.py iris system-update --project projects/flight_radar
 |---|---|---|
 | Fallback Wi-Fi network name (`FR_WIFI_SSID`) | *(empty)* | Leave empty to use the Wi-Fi saved in Vibe Mode |
 | Fallback Wi-Fi password (`FR_WIFI_PASSWORD`) | *(empty)* | Only with the SSID above |
+| Place-name lookup URL (`FR_GEOCODE_URL`) | `https://nominatim.openstreetmap.org/search` | Turns a `radar_location` ZIP/place into coordinates |
 | Manual latitude (`FR_MANUAL_LAT`) | *(empty)* | Decimal degrees, e.g. `40.7128`. Used unless a precise Wi-Fi fix is found (see [Location](#location)) |
 | Manual longitude (`FR_MANUAL_LON`) | *(empty)* | Decimal degrees, **west is negative**, e.g. `-74.0060` |
 | Wi-Fi geolocation URL (`FR_WIFI_GEO_URL`) | `https://api.beacondb.net/v1/geolocate` | Wi-Fi location service |
@@ -121,8 +122,12 @@ once, and nothing is saved between boots:
    addresses and signal strengths (never network names) to [beaconDB](https://beacondb.net),
    an open location database. It skips networks whose names end in `_nomap` and randomised MACs.
    It uses the result only if it's precise (within 2 km).
-2. **Manual:** otherwise, if *Manual latitude/longitude* are set in menuconfig, those are used.
-   They're also shown straight away while the Wi-Fi lookup runs.
+2. **Manual:** otherwise, a location you set yourself is used:
+   - on the device: **Vibe Mode > Settings > Shared information**, entry `radar_location`
+     (see below). This works for store installs too.
+   - or, in your own builds: *Manual latitude/longitude* in menuconfig.
+
+   It's also shown straight away while the Wi-Fi lookup runs.
 3. **IP (approximate):** otherwise, it uses [ipinfo.io](https://ipinfo.io), which is city-level
    from your internet address and can be many miles off.
 
@@ -143,8 +148,27 @@ IL 62701
 WIFI +-35M        <- or IP (APPROX) / MANUAL
 ```
 
+### Setting the location on the device (`radar_location`)
+
+Store installs can't use menuconfig: those values are fixed when the app is built. Instead,
+the radar reads a value from Vibe Mode's **Shared information**, which every app can read:
+
+1. Hold the **AI** button while powering on to start Vibe Mode.
+2. Open **Settings > Shared information** and add an entry. Use the on-screen keyboard:
+   - **Key:** `radar_location`
+   - **Value:** one of
+     - coordinates: `40.4775,-74.4826` (latitude, longitude; west and south are negative)
+     - a ZIP/postal code **with the country**: `08902, USA`
+     - a place: `North Brunswick, NJ`
+3. Restart normally. The corner shows the town it matched and `MANUAL`.
+
+Coordinates are used directly. A ZIP or place name is looked up once per start-up with
+OpenStreetMap's Nominatim. Always add the country to a ZIP: a bare `08902`, for example, is
+also a postcode in Spain. To go back to automatic, delete the entry. The entry takes priority
+over the menuconfig fields, and a precise Wi-Fi fix still takes priority over both.
+
 If it says `IP (APPROX)` and the town is wrong, beaconDB has no Wi-Fi data for your area yet.
-Set the manual coordinates, and they'll be used instead. If every method fails, the corner shows `NO LOCATION`
+Set `radar_location` (or the manual coordinates), and it'll be used instead. If every method fails, the corner shows `NO LOCATION`
 and the radar waits.
 
 ## Packaging for the ESP-Mosaico store (Ideas)
@@ -159,7 +183,7 @@ icon in English and Chinese. Everything it needs is in this repo:
 | `CHANGELOG.md` | Release notes shown on the store page |
 | `preview.png`, `store/icon.png` | Cover images |
 | `store/device/en`, `store/device/zh-CN` | Pre-generated Idea-grid labels + icon, so packaging needs no FreeType/libraqm |
-| `CMakeLists.txt` → `project(flight_radar VERSION 1.5.0)` | **The release version.** Bump it here for each store update |
+| `CMakeLists.txt` → `project(flight_radar VERSION 1.6.0)` | **The release version.** Bump it here for each store update |
 
 **1. Build the `.irisfw`** (also installs it on the connected board, a good final test):
 
@@ -181,26 +205,23 @@ python -m pip install "jsonschema>=4.23,<5" "markdown-it-py>=3,<5"
 **3. Package and validate the store ZIP** (offline):
 
 ```bat
-python mosaico.py project package --project projects/flight_radar --output dist\flight_radar-1.5.0.zip
-python mosaico.py project validate dist\flight_radar-1.5.0.zip --json
+python mosaico.py project package --project projects/flight_radar --output dist\flight_radar-1.6.0.zip
+python mosaico.py project validate dist\flight_radar-1.6.0.zip --json
 ```
 
 **4. Upload as a draft** (needs an ESP-Mosaico account). Upload creates a **draft**; publishing is a separate step on the website:
 
 ```bat
 python mosaico.py account login
-python mosaico.py project upload dist\flight_radar-1.5.0.zip --create
+python mosaico.py project upload dist\flight_radar-1.6.0.zip --create
 ```
 
 For later versions, bump the version in `CMakeLists.txt`, add a `CHANGELOG.md` entry, rebuild,
 re-package, and use `--update APPLICATION_ID --expected-project-version N` with the ID and draft
 version returned by the previous upload.
 
-**Before submitting:**
-- **License:** `mosaico-ideas.json` has no `license` yet, because choosing one is up to you. Add one,
-  e.g. `"license": "MIT"`, and a matching `LICENSE` file.
-- **Links:** the GitHub repo is private, so no link is listed. If you make it public, add it under
-  `project.external_links`.
+**Notes:**
+- `mosaico-ideas.json` declares the MIT license and links to this repo.
 - **Idea-grid labels:** to change the name/description, edit `tools/gen_presentations.py` and rerun it
   on Linux, with Espressif's `shared/ideas` generator, freetype-py and Pillow. The font is Noto Sans SC
   (SIL OFL 1.1) from Vibe Mode's fonts, a subset, so Chinese text is limited to the characters it contains.
@@ -221,3 +242,18 @@ The radar UI and the data parser were compiled and run on a PC with real LVGL 9.
 The Mosaico layout passes Espressif's `validate_native_layout.py`. This exact project
 has **not yet been built with ESP-IDF or installed on hardware**. If a step fails,
 paste the error.
+
+## License
+
+This project's code is released under the [MIT License](https://github.com/mkulukkallur/esp-mosaico-flight-radar/blob/main/LICENSE).
+
+Parts that come from elsewhere keep their own terms:
+- `partitions.csv`, `sdkconfig.defaults`, `sdkconfig.application.defaults`, `tools/quality/` and the
+  editor/pre-commit configs come from Espressif's ESP-Mosaico application template
+  (`mosaico.py project init`). Espressif hasn't published a license for those template files yet;
+  this project doesn't relicense them.
+- The Idea-grid labels in `store/device/` are rendered from Noto Sans SC (SIL Open Font License 1.1).
+- Data at run time: aircraft from [adsb.fi](https://adsb.fi) (personal, non-commercial use),
+  places © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors (ODbL), location
+  from [beaconDB](https://beacondb.net) and [ipinfo.io](https://ipinfo.io).
+
