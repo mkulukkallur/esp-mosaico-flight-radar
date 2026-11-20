@@ -8,7 +8,7 @@ Ideas and your settings stay in place.
 
 * Rotating sweep. Aircraft light up as it passes, then fade. Heading lines show direction; longer means faster.
 * Callsign tags on the 6 nearest. Nearest in amber. Table of the 4 nearest.
-* Blinking **OVERHEAD!** when a plane is within ~1 mile.
+* Blinking **OVERHEAD!**, a two-note chime and a short vibration when an aircraft first comes within 1 mile (once per aircraft, at most every 30 s).
 * **Tap the screen** to cycle the range: 2 / 5 / 10 / 25 mi.
 * Uses the **Wi-Fi saved in Vibe Mode** automatically.
 * **Finds its own location** at every start-up: nearby Wi-Fi networks first, then the internet (IP) address. Town, state, ZIP, coordinates and source are shown in the top-left corner.
@@ -93,6 +93,10 @@ python mosaico.py iris system-update --project projects/flight_radar
 | ADS-B API base URL (`FR_API_BASE`) | `https://opendata.adsb.fi/api/v3` | Aircraft data. Alternative: `https://api.adsb.lol/v2` |
 | Seconds between refreshes (`FR_REFRESH_SEC`) | `10` | 5–120. adsb.fi allows at most 1 request/second |
 | Distance units (`FR_UNITS_*`) | Miles | Miles (2/5/10/25) or kilometres (3/8/15/40) |
+| OVERHEAD! distance (`FR_OVERHEAD_M`) | `1609` | Metres (1609 = 1 mile). Airborne aircraft closer than this trigger the alert |
+| Play a chime (`FR_ALERT_SOUND`) | on | Speaker chime when an aircraft comes overhead |
+| Chime volume (`FR_ALERT_VOLUME`) | `60` | 0–100 |
+| Vibrate (`FR_ALERT_VIBRATE`) | on | Short buzz with the chime |
 | Timezone (`FR_TIMEZONE`) | `EST5EDT,M3.2.0,M11.1.0` | POSIX timezone for the clock, e.g. `CST6CDT,M3.2.0,M11.1.0`, `PST8PDT,M3.2.0,M11.1.0` |
 
 **Finding your coordinates:** in Google Maps, right-click your home and click the numbers at the
@@ -142,6 +146,64 @@ WIFI +-35M        <- or IP (APPROX) / MANUAL
 If it says `IP (APPROX)` and the town is wrong, beaconDB has no Wi-Fi data for your area yet.
 Set the manual coordinates, and they'll be used instead. If every method fails, the corner shows `NO LOCATION`
 and the radar waits.
+
+## Packaging for the ESP-Mosaico store (Ideas)
+
+The store takes a release ZIP built by `mosaico.py project package`. It contains the app's
+`.irisfw`, the README, changelog and cover images, and the Idea-grid name, description and
+icon in English and Chinese. Everything it needs is in this repo:
+
+| File | Purpose |
+|---|---|
+| `mosaico-ideas.json` | Store metadata (`mosaico-ideas/project-release/1`): title, categories, tags, file list |
+| `CHANGELOG.md` | Release notes shown on the store page |
+| `preview.png`, `store/icon.png` | Cover images |
+| `store/device/en`, `store/device/zh-CN` | Pre-generated Idea-grid labels + icon, so packaging needs no FreeType/libraqm |
+| `CMakeLists.txt` → `project(flight_radar VERSION 1.5.0)` | **The release version.** Bump it here for each store update |
+
+**1. Build the `.irisfw`** (also installs it on the connected board, a good final test):
+
+```bat
+C:\esp\espv6.2esp-idf\export.bat
+cd C:\esp\esp-mosaico-vibe
+python mosaico.py iris system-update --project projects/flight_radar
+```
+
+This creates `projects\flight_radar\build\flight_radar-system-update.irisfw`. The `mosaico.py`
+toolkit at this workspace's version has no build-only command; `system-update` is how it builds the bundle.
+
+**2. Install the packaging dependencies** (once, into the same Python):
+
+```bat
+python -m pip install "jsonschema>=4.23,<5" "markdown-it-py>=3,<5"
+```
+
+**3. Package and validate the store ZIP** (offline):
+
+```bat
+python mosaico.py project package --project projects/flight_radar --output dist\flight_radar-1.5.0.zip
+python mosaico.py project validate dist\flight_radar-1.5.0.zip --json
+```
+
+**4. Upload as a draft** (needs an ESP-Mosaico account). Upload creates a **draft**; publishing is a separate step on the website:
+
+```bat
+python mosaico.py account login
+python mosaico.py project upload dist\flight_radar-1.5.0.zip --create
+```
+
+For later versions, bump the version in `CMakeLists.txt`, add a `CHANGELOG.md` entry, rebuild,
+re-package, and use `--update APPLICATION_ID --expected-project-version N` with the ID and draft
+version returned by the previous upload.
+
+**Before submitting:**
+- **License:** `mosaico-ideas.json` has no `license` yet, because choosing one is up to you. Add one,
+  e.g. `"license": "MIT"`, and a matching `LICENSE` file.
+- **Links:** the GitHub repo is private, so no link is listed. If you make it public, add it under
+  `project.external_links`.
+- **Idea-grid labels:** to change the name/description, edit `tools/gen_presentations.py` and rerun it
+  on Linux, with Espressif's `shared/ideas` generator, freetype-py and Pillow. The font is Noto Sans SC
+  (SIL OFL 1.1) from Vibe Mode's fonts, a subset, so Chinese text is limited to the characters it contains.
 
 ## What differs from a standalone ESP-IDF project
 

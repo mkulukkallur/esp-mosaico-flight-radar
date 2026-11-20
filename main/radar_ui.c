@@ -30,6 +30,7 @@
 #include "esp_timer.h"
 #include "sdkconfig.h"
 #include "adsb.h"
+#include "alert.h"
 #include "location.h"
 #include "radar_math.h"
 #include "radar_ui.h"
@@ -60,7 +61,8 @@
 #define SWEEP_PERIOD_MS 4000   /* one revolution */
 #define FRAME_MS 40            /* ~25 fps sweep */
 #define TAGGED 6               /* nearest N aircraft get a callsign tag */
-#define OVERHEAD_KM 1.6        /* "OVERHEAD!" alert distance */
+#define OVERHEAD_KM (CONFIG_FR_OVERHEAD_M / 1000.0) /* "OVERHEAD!" distance */
+#define ALERT_COOLDOWN_US (30 * 1000000LL)          /* min gap between chimes */
 
 #ifdef CONFIG_FR_UNITS_METRIC
 static const int k_ranges[] = {3, 8, 15, 40};
@@ -329,7 +331,25 @@ static void update_table(void)
         }
     }
 
+    bool was_overhead = s_overhead;
     s_overhead = s_snap.count > 0 && s_snap.ac[0].dist_km < OVERHEAD_KM && !s_snap.ac[0].on_ground;
+
+    /* Chime once when an aircraft first comes overhead: on the transition, or
+     * when a different aircraft takes over; at most once per cooldown. */
+    static char s_alerted_hex[8];
+    static int64_t s_last_alert_us = -ALERT_COOLDOWN_US;
+    if (s_overhead) {
+        const char *hex = s_snap.ac[0].hex[0] ? s_snap.ac[0].hex : s_snap.ac[0].callsign;
+        bool new_plane = !was_overhead || strncmp(hex, s_alerted_hex, sizeof(s_alerted_hex)) != 0;
+        int64_t now = esp_timer_get_time();
+        if (new_plane && now - s_last_alert_us >= ALERT_COOLDOWN_US) {
+            alert_overhead();
+            s_last_alert_us = now;
+            strlcpy(s_alerted_hex, hex, sizeof(s_alerted_hex));
+        }
+    } else {
+        s_alerted_hex[0] = '\0';
+    }
 }
 
 /* ---------- header / footer ---------- */

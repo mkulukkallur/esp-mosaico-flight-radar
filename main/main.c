@@ -18,6 +18,7 @@
 #include "nvs_flash.h"
 #include "sdkconfig.h"
 #include "adsb.h"
+#include "alert.h"
 #include "location.h"
 #include "radar_ui.h"
 #include "wifi.h"
@@ -46,6 +47,8 @@ void app_main(void)
     }
     radar_ui_create();
     bsp_display_unlock();
+
+    alert_init(); /* speaker + vibration for the OVERHEAD! alert */
 
     /* Wi-Fi: menuconfig override if set, otherwise the network saved in Vibe Mode. */
     static char ssid[33], password[65];
